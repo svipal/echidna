@@ -25,6 +25,7 @@ import qualified Data.ByteString as BS
 import qualified Data.Yaml as Y
 
 import Echidna.Campaign
+import Echidna.Hook
 import Echidna.Solidity
 import Echidna.Test
 import Echidna.Transaction
@@ -37,6 +38,7 @@ data EConfig = EConfig { _cConf :: CampaignConf
                        , _tConf :: TestConf
                        , _xConf :: TxConf
                        , _uConf :: UIConf
+                       , _hConf :: HookConf
                        }
 makeLenses ''EConfig
 
@@ -57,6 +59,9 @@ instance Has TxConf EConfig where
 
 instance Has UIConf EConfig where
   hasLens = uConf
+
+instance Has HookConf EConfig where
+  hasLens = hConf
 
 instance FromJSON EConfig where
   parseJSON (Object v) =
@@ -100,6 +105,9 @@ instance FromJSON EConfig where
             <*> tc
             <*> xc
             <*> (UIConf <$> v .:? "dashboard" .!= True <*> style)
+            <*> (HookConf <$> v .:? "after_init"    .!= []
+                          <*> v .:? "before_each"   .!= []
+                          <*> v .:? "after_each"    .!= [])
   parseJSON _ = parseJSON (Object mempty)
 
 -- | The default config used by Echidna (see the 'FromJSON' instance for values used).

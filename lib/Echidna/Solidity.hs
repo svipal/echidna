@@ -31,6 +31,7 @@ import System.IO                  (openFile, IOMode(..))
 
 import Echidna.ABI         (SolSignature)
 import Echidna.Exec        (execTx)
+import Echidna.Hook        (HookConf, after_init, before_each, after_each)
 import Echidna.Transaction (Tx(..), World(..))
 
 import EVM hiding (contracts)
@@ -51,6 +52,7 @@ data SolException = BadAddr Addr
                   | CompileFailure
                   | NoContracts
                   | TestArgsFound Text
+                  | HookArgsFound Text
                   | ContractNotFound Text
                   | NoBytecode Text
                   | NoFuncs
@@ -64,6 +66,7 @@ instance Show SolException where
     NoContracts          -> "No contracts found in given file"
     (ContractNotFound c) -> "Given contract " ++ show c ++ " not found in given file"
     (TestArgsFound t)    -> "Test " ++ show t ++ " has arguments, aborting"
+    (HookArgsFound h)    -> "Hook " ++ show h ++ " has arguments, aborting"
     (NoBytecode t)       -> "No bytecode found for contract " ++ show t
     NoFuncs              -> "ABI is empty, are you sure your constructor is right?"
     NoTests              -> "No tests found in ABI"
@@ -131,12 +134,14 @@ linkLibraries ls = "--libraries " ++
 -- testing and extract an ABI and list of tests. Throws exceptions if anything returned doesn't look
 -- usable for Echidna. NOTE: Contract names passed to this function should be prefixed by the
 -- filename their code is in, plus a colon.
-loadSpecified :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x)
+loadSpecified :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x, Has HookConf x)
               => Maybe Text -> [SolcContract] -> m (VM, [SolSignature], [Text])
 loadSpecified name cs = let ensure l e = if l == mempty then throwM e else pure () in do
   -- Pick contract to load
   c <- choose cs name
   q <- view (hasLens . quiet)
+  h <- view hasLens
+  let hooks' = h ^. after_init ++ h ^. before_each ++ h ^. after_each
   liftIO $ do
     when (isNothing name && length cs > 1 && not q) $
       putStrLn "Multiple contracts found in file, only analyzing the first"
@@ -147,7 +152,8 @@ loadSpecified name cs = let ensure l e = if l == mempty then throwM e else pure 
   let bc = c ^. creationCode
       blank = populateAddresses (ads |> d) bala (vmForEthrunCreation bc)
       abi = liftM2 (,) (view methodName) (fmap snd . view methodInputs) <$> toList (c ^. abiMap)
-      (tests, funs) = partition (isPrefixOf pref . fst) abi
+      (tests, funs') = partition (isPrefixOf pref . fst) abi
+      (hooks, funs) = partition ((`elem` hooks') . fst) funs'
 
   -- Select libraries
   ls <- mapM (choose cs . Just . T.pack) libs
@@ -155,6 +161,9 @@ loadSpecified name cs = let ensure l e = if l == mempty then throwM e else pure 
   -- Make sure everything is ready to use, then ship it
   mapM_ (uncurry ensure) [(abi, NoFuncs), (tests, NoTests), (funs, OnlyTests)] -- ABI checks
   ensure bc (NoBytecode $ c ^. contractName)                                   -- Bytecode check
+  case find (not . null . snd) hooks of
+       Just (h', _) -> throwM $ HookArgsFound h'
+       Nothing      -> pure ()
   case find (not . null . snd) tests of
     Just (t,_) -> throwM $ TestArgsFound t                                     -- Test args check
     Nothing    -> loadLibraries ls addrLibrary d blank >>= fmap (, fallback : funs, fst <$> tests) .
@@ -175,9 +184,9 @@ loadSpecified name cs = let ensure l e = if l == mempty then throwM e else pure 
 --loadSolidity :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x)
 --             => FilePath -> Maybe Text -> m (VM, [SolSignature], [Text])
 --loadSolidity fp name = contracts fp >>= loadSpecified name
-loadWithCryticCompile :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x)
+loadWithCryticCompile :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x, Has HookConf x)
              => FilePath -> Maybe Text -> m (VM, [SolSignature], [Text])
-loadWithCryticCompile fp name = contracts fp >>= loadSpecified name 
+loadWithCryticCompile fp name = contracts fp >>= loadSpecified name
 
 -- | Given the results of 'loadSolidity', assuming a single-contract test, get everything ready
 -- for running a 'Campaign' against the tests found.
@@ -188,7 +197,7 @@ prepareForTest (v, a, ts) = let r = v ^. state . contract in
 
 -- | Basically loadSolidity, but prepares the results to be passed directly into
 -- a testing function.
-loadSolTests :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x)
+loadSolTests :: (MonadIO m, MonadThrow m, MonadReader x m, Has SolConf x, Has HookConf x)
              => FilePath -> Maybe Text -> m (VM, World, [(Text, Addr)])
 loadSolTests fp name = loadWithCryticCompile fp name >>= prepareForTest
 

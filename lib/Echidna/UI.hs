@@ -32,9 +32,10 @@ import UnliftIO.Concurrent (forkIO, killThread)
 
 import qualified Data.Text as T
 
-import Echidna.Campaign
 import Echidna.ABI
+import Echidna.Campaign
 import Echidna.Exec
+import Echidna.Hook
 import Echidna.Solidity
 import Echidna.Test
 import Echidna.Transaction
@@ -125,7 +126,7 @@ isTerminal = liftIO $ (&&) <$> queryTerminal (Fd 0) <*> queryTerminal (Fd 1)
 -- | Set up and run an Echidna 'Campaign' while drawing the dashboard, then print 'Campaign' status
 -- once done.
 ui :: ( MonadCatch m, MonadRandom m, MonadReader x m, MonadUnliftIO m
-      , Has SolConf x, Has TestConf x, Has TxConf x, Has CampaignConf x, Has Names x, Has TxConf x, Has UIConf x)
+      , Has SolConf x, Has TestConf x, Has TxConf x, Has CampaignConf x, Has Names x, Has TxConf x, Has UIConf x, Has HookConf x)
    => VM        -- ^ Initial VM state
    -> World     -- ^ Initial world state
    -> [SolTest] -- ^ Tests to evaluate
