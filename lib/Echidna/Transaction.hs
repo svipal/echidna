@@ -55,6 +55,8 @@ data TxConf = TxConf { _propGas       :: Word
                      -- ^ Maximum time delay between transactions (seconds)
                      , _maxBlockDelay :: Word
                      -- ^ Maximum block delay between transactions
+                     , _maxVale       :: Word
+                     -- ^ Maximum value sent to payable functions
                      }
 
 makeLenses 'TxConf
@@ -109,10 +111,11 @@ genTx = use (hasLens :: Lens' y World) >>= evalStateT genTxM . (defaultDict,)
 
 -- | Generate a random 'Transaction' with either synthesis or mutation of dictionary entries.
 genTxM :: (MonadRandom m, MonadReader x m, Has TxConf x, MonadState y m, Has GenDict y, Has World y, MonadThrow m) => m Tx
-genTxM = view hasLens >>= \(TxConf _ g t b) -> genTxWith
+genTxM = view hasLens >>= \(TxConf _ g t b v) -> use (hasLens . payables) >>= \p -> genTxWith
   (rElem "sender list") (rElem "recipient list")                             -- src and dst
   (const $ genInteractionsM . snd)                                           -- call itself
-  (pure g) (\_ _ _ -> pure 0) (level <$> liftM2 (,) (inRange t) (inRange b)) -- gas, value, delay
+  (pure g) (\_ _ (n, _) -> if p n then inRange v else pure 0)                -- gas and value
+  (level <$> liftM2 (,) (inRange t) (inRange b))                             -- delay
      where inRange hi = w256 . fromIntegral <$> getRandomR (0 :: Integer, fromIntegral hi)
 
 -- | Check if a 'Transaction' is as \"small\" (simple) as possible (using ad-hoc heuristics).

@@ -91,6 +91,8 @@ data GenDict = GenDict { _pSynthA    :: Float
                          -- ^ Default seed to use if one is not provided in EConfig
                        , _rTypes     :: Text -> Maybe AbiType
                          -- ^ Return types of any methods we scrape return values from
+                       , _payables   :: Text -> Bool
+                         -- ^ Functions that can receive ether
                        }
 
 makeLenses 'GenDict
@@ -105,7 +107,7 @@ gaddCalls :: [SolCall] -> GenDict -> GenDict
 gaddCalls c = wholeCalls <>~ hashMapBy (fmap $ fmap abiValueType) c
 
 defaultDict :: GenDict
-defaultDict = mkGenDict 0 [] [] 0 (const Nothing)
+defaultDict = mkGenDict 0 [] [] 0 (const Nothing) (const False)
 
 -- This instance is the only way for mkConf to work nicely, and is well-formed.
 {-# ANN module ("HLint: ignore Unused LANGUAGE pragma" :: String) #-}
@@ -118,8 +120,8 @@ mkGenDict :: Float      -- ^ Percentage of time to mutate instead of synthesize.
           -> [AbiValue] -- ^ A list of 'AbiValue' constants to use during dictionary-based generation
           -> [SolCall]  -- ^ A list of complete 'SolCall's to mutate
           -> Int        -- ^ A default seed
-          -> (Text -> Maybe AbiType)
-          -- ^ A return value typing rule
+          -> (Text -> Maybe AbiType) -- ^ A return value typing rule
+          -> (Text -> Bool)          -- ^ A rule for payable functions
           -> GenDict
 mkGenDict p vs cs = GenDict p (hashMapBy abiValueType vs) (hashMapBy (fmap $ fmap abiValueType) cs)
 

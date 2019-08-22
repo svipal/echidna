@@ -237,3 +237,6 @@ extractConstants = nub . concatMap (constants "" . view contractAst) where
 returnTypes :: [SolcContract] -> Text -> Maybe AbiType
 returnTypes cs t = preview (_Just . methodOutput . _Just . _2) .
   find ((== t) . view methodName) $ concatMap (toList . view abiMap) cs
+
+payFuns :: [SolcContract] -> Text -> Bool
+payFuns = undefined
