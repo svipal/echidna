@@ -15,6 +15,7 @@ import Control.Monad.IO.Class     (MonadIO(..))
 import Control.Monad.Reader       (MonadReader)
 import Control.Monad.State.Strict (execStateT)
 import Data.Aeson                 (Value(..))
+import Data.Bool                  (bool)
 import Data.ByteString.Lens       (packedChars)
 import Data.DoubleWord            (Int256, Word256)
 import Data.Foldable              (toList)
@@ -29,9 +30,9 @@ import Data.Text.Read             (decimal)
 import System.Process             (StdStream(..), readCreateProcess, proc, std_err)
 import System.IO                  (openFile, IOMode(..))
 
-import Echidna.ABI         (SolSignature)
+import Echidna.ABI         (SolSignature, World(..))
 import Echidna.Exec        (execTx)
-import Echidna.Transaction (Tx(..), World(..))
+import Echidna.Transaction (Tx(..))
 
 import EVM hiding (contracts)
 import qualified EVM (contracts)
@@ -196,7 +197,7 @@ loadWithCryticCompile fp name = contracts fp >>= loadSpecified name
 prepareForTest :: (MonadReader x m, Has SolConf x)
                => (VM, [SolSignature], [Text]) -> m (VM, World, [SolTest])
 prepareForTest (v, a, ts) = view hasLens <&> \(SolConf _ _ s _ _ _ _ _ _ _ ch) ->
-  (v, World s [(r, a)], fmap Left (zip ts $ repeat r) ++ if ch then Right <$> drop 1 a else []) where
+  (v, World s (const a), fmap Left (zip ts $ repeat r) ++ if ch then Right <$> drop 1 a else []) where
     r = v ^. state . contract
 
 -- | Basically loadSolidity, but prepares the results to be passed directly into

@@ -84,48 +84,41 @@ level :: (Num a, Eq a) => (a, a) -> (a, a)
 level (elemOf each 0 -> True) = (0,0)
 level x                       = x
 
--- | A contract is just an address with an ABI (for our purposes).
-type ContractA = (Addr, [SolSignature])
-
--- | The world is made our of humans with an address, and contracts with an address + ABI.
-data World = World { _senders   :: [Addr]
-                   , _receivers :: [ContractA]
-                   }
-makeLenses ''World
-
 -- | Given generators for an origin, destination, value, and function call, generate a call
 -- transaction. Note: This doesn't generate @CREATE@s because I don't know how to do that at random.
-genTxWith :: (MonadRandom m, MonadState x m, Has World x, MonadThrow m) 
-          => ([Addr] -> m Addr)                       -- ^ Sender generator
-          -> ([ContractA] -> m ContractA)             -- ^ Receiver generator
-          -> (Addr -> ContractA -> m SolCall)         -- ^ Call generator
-          -> m Word                                   -- ^ Gas generator
-          -> m Word                                   -- ^ Gas price generator
-          -> (Addr -> ContractA -> SolCall -> m Word) -- ^ Value generator
-          -> m (Word, Word)                           -- ^ Delay generator
+genTxWith :: (MonadRandom m, MonadState x m, Has World x, Has VM x, MonadThrow m) 
+          => ([Addr] -> m Addr)                  -- ^ Sender generator
+          -> ([Addr] -> m Addr)                  -- ^ Receiver generator
+          -> (Addr -> Addr -> m SolCall)         -- ^ Call generator
+          -> m Word                              -- ^ Gas generator
+          -> m Word                              -- ^ Gas price generator
+          -> (Addr -> Addr -> SolCall -> m Word) -- ^ Value generator
+          -> m (Word, Word)                      -- ^ Delay generator
           -> m Tx
-genTxWith s r c g gp v t = use hasLens >>= \(World ss rs) ->
-  let s' = s ss; r' = r rs; c' = join $ liftM2 c s' r' in
-    ((liftM5 Tx (Left <$> c') s' (fst <$> r') g gp <*>) =<< liftM3 v s' r' c') <*> t
+genTxWith s r c g gp v t = use hasLens >>= \(World ss _) -> use hasLens >>= \vm ->
+  let s' = s ss; r' = r (vm ^.. env . contracts . ifolded . asIndex); c' = join $ liftM2 c s' r' in
+    ((liftM5 Tx (Left <$> c') s' r' g gp <*>) =<< liftM3 v s' r' c') <*> t
 
 -- | Synthesize a random 'Transaction', not using a dictionary.
-genTx :: forall m x y. (MonadRandom m, MonadReader x m, Has TxConf x, MonadState y m, Has World y, MonadThrow m) => m Tx
-genTx = use (hasLens :: Lens' y World) >>= evalStateT genTxM . (defaultDict,)
+genTx :: forall m x y. (MonadRandom m, MonadReader x m, Has TxConf x, MonadState y m, Has World y, MonadThrow m)
+      => VM -> m Tx
+genTx v = use (hasLens :: Lens' y World) >>= evalStateT genTxM . (defaultDict,v,)
 
 -- | Generate a random 'Transaction' with either synthesis or mutation of dictionary entries.
-genTxM :: (MonadRandom m, MonadReader x m, Has TxConf x, MonadState y m, Has GenDict y, Has World y, MonadThrow m) => m Tx
-genTxM = view hasLens >>= \(TxConf _ g maxGp t b) -> genTxWith
-  (rElem "sender list") (rElem "recipient list")                             -- src and dst
-  (const $ genInteractionsM . snd)                                           -- call itself
-  (pure g) (inRange maxGp) (\_ _ _ -> pure 0)                                -- gas, gasprice, value
-  (level <$> liftM2 (,) (inRange t) (inRange b))                             -- delay
+genTxM :: ( MonadRandom m, MonadReader x m, MonadState y m, MonadThrow m
+          , Has TxConf x, Has GenDict y, Has World y, Has VM y) => m Tx
+genTxM = view hasLens >>= \(TxConf _ g maxGp t b) -> use hasLens >>= \(World _ f) -> genTxWith
+  (rElem "sender list") (rElem "recipient list") -- src and dst
+  (const $ genInteractionsM . f)                 -- call itself
+  (pure g) (inRange maxGp) (\_ _ _ -> pure 0)    -- gas, gasprice, value
+  (level <$> liftM2 (,) (inRange t) (inRange b)) -- delay
      where inRange hi = w256 . fromIntegral <$> getRandomR (0 :: Integer, fromIntegral hi)
 
 -- | Check if a 'Transaction' is as \"small\" (simple) as possible (using ad-hoc heuristics).
 canShrinkTx :: Tx -> Bool
 canShrinkTx (Tx (Right _) _ _ _ 0 0 (0, 0))    = False
 canShrinkTx (Tx (Left (_,l)) _ _ _ 0 0 (0, 0)) = any canShrinkAbiValue l
-canShrinkTx _                                = True
+canShrinkTx _                                  = True
 
 -- | Given a 'Transaction', generate a random \"smaller\" 'Transaction', preserving origin,
 -- destination, value, and call signature.
@@ -136,7 +129,7 @@ shrinkTx (Tx c s d g gp (C _ v) (C _ t, C _ b)) = let
     liftM5 Tx c' (pure s) (pure d) (pure g) (lower gp) <*> lower v <*> fmap level (liftM2 (,) (lower t) (lower b))
 
 -- | Given a 'Set' of 'Transaction's, generate a similar 'Transaction' at random.
-spliceTxs :: (MonadRandom m, MonadReader x m, Has TxConf x, MonadState y m, Has World y, MonadThrow m) => Set Tx -> m Tx
+spliceTxs :: (MonadRandom m, MonadReader x m, Has TxConf x, MonadState y m, Has VM y, Has World y, MonadThrow m) => Set Tx -> m Tx
 spliceTxs ts = let l = S.toList ts; (cs, ss) = unzip $ (\(Tx c s _ _ _ _ _) -> (c,s)) <$> l in
   view (hasLens . txGas) >>= \g ->
     genTxWith (const . rElem "sender list" $ ss) (rElem "recipient list")

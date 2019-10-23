@@ -28,6 +28,9 @@ import Data.Vector.Instances ()
 import Data.Word8 (Word8)
 import Numeric (showHex)
 
+import EVM (VM, contracts, env)
+import EVM.Exec (vmForEthrunCreation)
+import EVM.Types (Addr(..))
 import EVM.ABI
 
 import qualified Data.ByteString as BS
@@ -134,7 +137,7 @@ getRandomUint n = join $ fromList [(getRandomR (0, 1023), 1), (getRandomR (0, 2 
 -- Note that we define the dictionary case ('genAbiValueM') first (below), so recursive types can be
 -- be generated using the same dictionary easily
 genAbiValue :: MonadRandom m => AbiType -> m AbiValue
-genAbiValue = flip evalStateT defaultDict . genAbiValueM
+genAbiValue = flip evalStateT (defaultDict, World [] (const []), vmForEthrunCreation "") . genAbiValueM
 
 -- | Synthesize a random 'SolCall' given its 'SolSignature'. Doesn't use a dictionary.
 genAbiCall :: MonadRandom m => SolSignature -> m SolCall
@@ -268,17 +271,22 @@ mutateAbiCall = traverse $ traverse mutateAbiValue
 -- | Given a generator taking an @a@ and returning a @b@ and a way to get @b@s associated with some
 -- @a@ from a GenDict, return a generator that takes an @a@ and either synthesizes new @b@s with the
 -- provided generator or uses the 'GenDict' dictionary (when available).
-genWithDict :: (Eq a, Hashable a, MonadState x m, Has GenDict x, MonadRandom m)
+genWithDict :: (Eq a, Hashable a, MonadState x m, Has GenDict x, Has World x, Has VM x, MonadRandom m)
             => (GenDict -> HashMap a [b]) -> (a -> m b) -> a -> m b
 genWithDict f g t = let fromDict = uniformMay . M.lookupDefault [] t . f in gets getter >>= \c ->
   fromMaybe <$> g t <*> (bool (pure Nothing) (fromDict c) . (c ^. pSynthA >=) =<< getRandom)
 
 -- | Synthesize a random 'AbiValue' given its 'AbiType'. Requires a dictionary.
-genAbiValueM :: (MonadState x m, Has GenDict x, MonadRandom m) => AbiType -> m AbiValue
+genAbiValueM :: (MonadState x m, Has GenDict x, Has World x, Has VM x, MonadRandom m) => AbiType -> m AbiValue
 genAbiValueM = genWithDict (view constants) $ \case
   (AbiUIntType n)         -> AbiUInt n  . fromInteger <$> getRandomUint n
   (AbiIntType n)          -> AbiInt n   . fromInteger <$> getRandomR (-1 * 2 ^ n, 2 ^ (n - 1))
-  AbiAddressType          -> AbiAddress . fromInteger <$> getRandomR (0, 2 ^ (160 :: Integer) - 1)
+  -- Address generation is "less random" than other types of generation b/c random addresses are near-
+  -- -meaningless. We instead choose from addresses of deployed contracts + known sender addrs + one random addr
+  AbiAddressType          -> do cas <- gets . toListOf $ hasLens . env . contracts . ifolded . asIndex
+                                was <- use $ hasLens . to (\(World l _) -> l)
+                                ra  <- Addr . fromInteger <$> getRandomR (0, 2 ^ (160 :: Integer) - 1)
+                                uniform $ (\(Addr a) -> AbiAddress a) <$> ra : cas ++ was
   AbiBoolType             -> AbiBool <$> getRandom
   (AbiBytesType n)        -> AbiBytes n . BS.pack . take n <$> getRandoms
   AbiBytesDynamicType     -> liftM2 (\n -> AbiBytesDynamic . BS.pack . take n)
@@ -290,11 +298,21 @@ genAbiValueM = genWithDict (view constants) $ \case
   (AbiArrayType n t)      -> AbiArray n t <$> V.replicateM n (genAbiValueM t)
   (AbiTupleType v)        -> AbiTuple <$> traverse genAbiValueM v
 
+-- | A contract is just an address with an ABI (for our purposes).
+type ContractA = (Addr, [SolSignature])
+
+-- | The world is made our of humans with an address, and a function for getting the ABI of contracts
+data World = World { _senders   :: [Addr]
+                   , _receivers :: Addr -> [SolSignature]
+                   }
+makeLenses ''World
+
 -- | Given a 'SolSignature', generate a random 'SolCalls' with that signature, possibly with a dictionary.
-genAbiCallM :: (MonadState x m, Has GenDict x, MonadRandom m) => SolSignature -> m SolCall
+genAbiCallM :: (MonadState x m, Has GenDict x, Has VM x, Has World x, MonadRandom m)
+            => SolSignature -> m SolCall
 genAbiCallM = genWithDict (view wholeCalls) (traverse $ traverse genAbiValueM)
 
 -- | Given a list of 'SolSignature's, generate a random 'SolCall' for one, possibly with a dictionary.
-genInteractionsM :: (MonadState x m, Has GenDict x, MonadRandom m, MonadThrow m)
+genInteractionsM :: (MonadState x m, Has GenDict x, Has VM x, Has World x, MonadRandom m, MonadThrow m)
                  => [SolSignature] -> m SolCall
 genInteractionsM l = genAbiCallM =<< rElem "ABI" l

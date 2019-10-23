@@ -186,7 +186,7 @@ callseq v w ql = do
   -- Then, we get the current campaign state
   ca <- use hasLens
   -- Then, we generate the actual transaction in the sequence
-  is <- replicateM ql (evalStateT genTxM (w, ca ^. genDict))
+  is <- replicateM ql (evalStateT genTxM (v, w, ca ^. genDict))
   -- We then run each call sequentially. This gives us the result of each call, plus a new state
   (res, s) <- runStateT (evalSeq v ef is) (v, ca)
   -- Save the global campaign state (also vm state, but that gets reset before it's used)
